@@ -1,11 +1,17 @@
 {
     "name": "@translatize/core",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "description": "Zero-dependency TypeScript SDK for the Translatize integration API.",
     "type": "module",
     "license": "MIT",
     "author": "SIA \"MICRON\"",
-    "homepage": "https://translatize.com",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/Translatize/integrations.git",
+        "directory": "core"
+    },
+    "homepage": "https://translatize.com/docs",
+    "bugs": "https://github.com/Translatize/integrations/issues",
     "main": "./dist/index.js",
     "module": "./dist/index.js",
     "types": "./dist/index.d.ts",

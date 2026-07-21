@@ -21,7 +21,7 @@ import type {
 } from "./types.js";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
-const USER_AGENT = "translatize-core/0.1.1";
+const USER_AGENT = "translatize-core/0.1.2";
 // Server-enforced maximum labels per batch request; upsertLabels chunks to this.
 const MAX_BATCH = 500;
 

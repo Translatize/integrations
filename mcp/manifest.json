@@ -2,7 +2,7 @@
     "manifest_version": "0.3",
     "name": "translatize",
     "display_name": "Translatize",
-    "version": "0.1.0",
+    "version": "0.1.2",
     "description": "Manage your Translatize translations from Claude - read, search and edit labels, fill missing translations, and work with git-like branches.",
     "long_description": "The Translatize MCP server connects Claude Desktop to your Translatize translation-management project. Inspect the project and its languages, list/search/read/upsert translation labels, check per-language coverage, find and fill missing translations (yourself or with platform AI), and - with a create-own scoped token - create, compare, review, merge and delete branches. Authenticate with a Translatize integration API token (an \"mcni_...\" string) created under Project Settings -> Integrations; every token is bound to one project and base branch.",
     "author": {
@@ -12,6 +12,10 @@
     },
     "homepage": "https://translatize.com",
     "documentation": "https://www.npmjs.com/package/@translatize/mcp",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/Translatize/integrations"
+    },
     "support": "mailto:support@translatize.com",
     "icon": "icon.png",
     "license": "MIT",

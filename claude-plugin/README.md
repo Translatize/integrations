@@ -13,9 +13,9 @@ Claude Code launches on demand with `npx -y @translatize/mcp`.
 
 - **Node.js ≥ 18.17** on the machine running Claude Code (so `npx` can fetch and
   run the server).
-- The **`@translatize/mcp` package published to npm** – `npx` downloads it the
-  first time the server starts. Until it is published, install locally instead
-  (see below).
+- The **`@translatize/mcp` package**, published to npm – `npx` downloads it the
+  first time the server starts. (To run against a local checkout instead, use the
+  local install below.)
 - A **Translatize API token** (an `mcni_...` string) exported as the
   `TRANSLATIZE_API_TOKEN` environment variable. Create one under **Project
   Settings → Integrations** at [app.translatize.com](https://app.translatize.com).

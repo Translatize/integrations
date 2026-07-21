@@ -84,7 +84,7 @@ test("me(): sends auth + user-agent headers and parses the response", async () =
     assert.equal(calls[0].url, "https://api.example.com/v1/integrations/me");
     assert.equal(calls[0].method, "GET");
     assert.equal(calls[0].headers["authorization"], "Bearer mcni_abc");
-    assert.equal(calls[0].headers["user-agent"], "translatize-core/0.1.1");
+    assert.equal(calls[0].headers["user-agent"], "translatize-core/0.1.2");
 });
 
 test("trailing slash in apiUrl is tolerated", async () => {

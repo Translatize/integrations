@@ -1,12 +1,18 @@
 {
     "name": "@translatize/mcp",
-    "version": "0.1.0",
+    "version": "0.1.2",
     "mcpName": "com.translatize/mcp",
     "description": "Model Context Protocol (MCP) server exposing the Translatize translation-management API to AI agents like Claude Code and Cursor.",
     "type": "module",
     "license": "MIT",
     "author": "SIA \"MICRON\"",
-    "homepage": "https://translatize.com",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/Translatize/integrations.git",
+        "directory": "mcp"
+    },
+    "homepage": "https://translatize.com/docs",
+    "bugs": "https://github.com/Translatize/integrations/issues",
     "bin": {
         "translatize-mcp": "./dist/index.js"
     },
@@ -35,7 +41,7 @@
     },
     "dependencies": {
         "@modelcontextprotocol/sdk": "^1.29.0",
-        "@translatize/core": "^0.1.0",
+        "@translatize/core": "^0.1.2",
         "zod": "^3.25.76"
     },
     "devDependencies": {

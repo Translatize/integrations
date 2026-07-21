@@ -283,7 +283,7 @@ describe("translatize-mcp stdio server", () => {
 
     it("initialize reports the server identity", () => {
         assert.equal(initResult.result.serverInfo.name, "translatize");
-        assert.equal(initResult.result.serverInfo.version, "0.1.0");
+        assert.equal(initResult.result.serverInfo.version, "0.1.2");
         assert.equal(stderr, "", `server should be silent on stderr, got: ${stderr}`);
     });
 
