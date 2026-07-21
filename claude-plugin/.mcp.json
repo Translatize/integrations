@@ -1,0 +1,11 @@
+{
+    "mcpServers": {
+        "translatize": {
+            "command": "npx",
+            "args": ["-y", "@translatize/mcp"],
+            "env": {
+                "TRANSLATIZE_API_TOKEN": "${TRANSLATIZE_API_TOKEN}"
+            }
+        }
+    }
+}

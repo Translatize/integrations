@@ -1,0 +1,68 @@
+{
+    "manifest_version": "0.3",
+    "name": "translatize",
+    "display_name": "Translatize",
+    "version": "0.1.0",
+    "description": "Manage your Translatize translations from Claude - read, search and edit labels, fill missing translations, and work with git-like branches.",
+    "long_description": "The Translatize MCP server connects Claude Desktop to your Translatize translation-management project. Inspect the project and its languages, list/search/read/upsert translation labels, check per-language coverage, find and fill missing translations (yourself or with platform AI), and - with a create-own scoped token - create, compare, review, merge and delete branches. Authenticate with a Translatize integration API token (an \"mcni_...\" string) created under Project Settings -> Integrations; every token is bound to one project and base branch.",
+    "author": {
+        "name": "SIA \"MICRON\"",
+        "email": "support@translatize.com",
+        "url": "https://translatize.com"
+    },
+    "homepage": "https://translatize.com",
+    "documentation": "https://www.npmjs.com/package/@translatize/mcp",
+    "support": "mailto:support@translatize.com",
+    "icon": "icon.png",
+    "license": "MIT",
+    "keywords": [
+        "translation",
+        "i18n",
+        "localization",
+        "translatize",
+        "mcp"
+    ],
+    "privacy_policies": [
+        "https://translatize.com/en/privacy"
+    ],
+    "server": {
+        "type": "node",
+        "entry_point": "dist/index.js",
+        "mcp_config": {
+            "command": "node",
+            "args": [
+                "${__dirname}/dist/index.js"
+            ],
+            "env": {
+                "TRANSLATIZE_API_TOKEN": "${user_config.api_token}",
+                "TRANSLATIZE_API_URL": "${user_config.api_url}"
+            }
+        }
+    },
+    "user_config": {
+        "api_token": {
+            "type": "string",
+            "title": "Translatize API token",
+            "description": "Your Translatize integration API token (an \"mcni_...\" string). Create one under Project Settings -> Integrations at https://app.translatize.com. Each token is bound to one project and branch.",
+            "required": true,
+            "sensitive": true
+        },
+        "api_url": {
+            "type": "string",
+            "title": "API base URL",
+            "description": "Translatize API base URL including the /v1 segment. Leave as the default unless you run a self-hosted instance.",
+            "required": false,
+            "default": "https://api.translatize.com/v1"
+        }
+    },
+    "compatibility": {
+        "platforms": [
+            "darwin",
+            "win32",
+            "linux"
+        ],
+        "runtimes": {
+            "node": ">=18.17"
+        }
+    }
+}

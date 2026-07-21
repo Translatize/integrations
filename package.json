@@ -1,0 +1,19 @@
+{
+    "name": "translatize-integrations",
+    "private": true,
+    "version": "0.1.0",
+    "description": "Translatize integration packages: SDK, CLI and MCP server.",
+    "workspaces": [
+        "core",
+        "cli",
+        "mcp"
+    ],
+    "engines": {
+        "node": ">=18.17"
+    },
+    "scripts": {
+        "build": "npm run build --workspaces --if-present",
+        "test": "npm run test --workspaces --if-present"
+    },
+    "license": "MIT"
+}
