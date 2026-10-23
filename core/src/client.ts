@@ -127,7 +127,13 @@ export class TranslatizeClient {
         }
         const projectId = await this.resolveProjectId();
         const res = await this.fetchOk("GET", `/integrations/projects/${encodeURIComponent(projectId)}/export`, {
-            query: { format: opts.format, lang: opts.lang, namespace: opts.namespace, branch: opts.branch },
+            query: {
+                format: opts.format,
+                lang: opts.lang,
+                sourceLang: opts.sourceLang,
+                namespace: opts.namespace,
+                branch: opts.branch,
+            },
         });
         return res.text();
     }

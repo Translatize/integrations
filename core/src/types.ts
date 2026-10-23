@@ -63,14 +63,28 @@ export interface ListLabelsOptions {
     branch?: string;
 }
 
-/** Supported export formats. */
-export type ExportFormat = "json" | "csv" | "ios" | "android";
+/**
+ * Supported export formats.
+ *
+ * `json`, `csv` and `yaml` hold every project language in one file; the rest are
+ * single-language and export `lang` (or the project's first language when `lang` is
+ * omitted). `xliff` is bilingual — it pairs each translation with its source text, see
+ * {@link ExportOptions.sourceLang}.
+ */
+export type ExportFormat =
+    | "json" | "csv" | "yaml" | "xliff" | "po" | "arb" | "resx" | "ios" | "android";
 
 /** Options for {@link TranslatizeClient.exportFile}. */
 export interface ExportOptions {
     format: ExportFormat;
     /** Limit the export to a single language. */
     lang?: LangCode;
+    /**
+     * Language to translate *from*, for the bilingual formats (`xliff`, and the
+     * translator comments in `po`). Ignored by every other format. Defaults to English
+     * when the project has it, otherwise another project language.
+     */
+    sourceLang?: LangCode;
     /** Restrict to keys beginning with `"<namespace>."`. */
     namespace?: string;
     /**

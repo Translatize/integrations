@@ -50,7 +50,7 @@ the project id itself (via `me()`, cached) – you never pass it in.
 | --- | --- | --- |
 | `me()` | `GET /me` | Token identity: project, bound branch, role, token metadata. |
 | `listLabels({ namespace?, status?, branch? })` | `GET .../labels` | Read a branch's labels. |
-| `exportFile({ format, lang?, namespace?, branch? })` | `GET .../export` | Export a branch as a raw file body (`json` \| `csv` \| `ios` \| `android`). |
+| `exportFile({ format, lang?, sourceLang?, namespace?, branch? })` | `GET .../export` | Export a branch as a raw file body. Multi-language: `json` \| `csv` \| `yaml`. Single-language: `xliff` \| `po` \| `arb` \| `resx` \| `ios` \| `android`. |
 | `upsertLabel(input, { branch? }?)` | `PATCH .../labels` | Create/update one label. |
 | `upsertLabels(inputs, { branch? }?)` | `PATCH .../labels/batch` | Create/update many (auto-chunked to 500/request). |
 | `listBranches()` | `GET .../branches` | Every branch, flagged `createdByThisToken` / `writable`. |
