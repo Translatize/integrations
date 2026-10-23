@@ -1,6 +1,6 @@
 {
     "name": "@translatize/cli",
-    "version": "0.1.2",
+    "version": "0.1.3",
     "description": "Command-line tool to sync your app's translations with Translatize from CI — pull, push and status with git-like branching.",
     "type": "module",
     "license": "MIT",
@@ -35,7 +35,7 @@
         "clean": "rm -rf dist dist-test"
     },
     "dependencies": {
-        "@translatize/core": "^0.1.2",
+        "@translatize/core": "^0.1.3",
         "commander": "^12.1.0",
         "picocolors": "^1.1.1"
     },
