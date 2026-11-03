@@ -6,8 +6,11 @@ import { initCommand, type InitOpts } from "./commands/init.js";
 import { pullCommand, type PullOpts } from "./commands/pull.js";
 import { pushCommand, type PushOpts } from "./commands/push.js";
 import { statusCommand, type StatusOpts } from "./commands/status.js";
+import { qaCommand, type QaOpts } from "./commands/qa.js";
+import { DEFAULT_CAPTURE_DIR, MAX_SCREENS_PER_RUN, screenshotsUploadCommand, type ScreenshotsUploadOpts } from "./commands/screenshots.js";
+import { releaseCommand, type ReleaseOpts } from "./commands/release.js";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 /** Attach the flags every command accepts. */
 function withGlobals(cmd: Command): Command {
@@ -40,6 +43,7 @@ function build(): Command {
         .option("--files <pattern>", "file pattern with a {lang} placeholder (default locales/{lang}.json)")
         .option("--format <format>", "on-disk format: json-nested or json-flat (default json-nested)")
         .option("--force", "overwrite an existing config file")
+        .option("--agents", "only write the coding-agent rules into AGENTS.md (and CLAUDE.md when it exists); leaves the config alone")
         .action((opts: InitOpts) => run(() => initCommand(opts)));
 
     withGlobals(program.command("pull"))
@@ -63,6 +67,32 @@ function build(): Command {
         .option("--fail-on-diff", "exit 1 if local differs from the branch at all")
         .option("--json", "emit machine-readable JSON")
         .action((opts: StatusOpts) => run(() => statusCommand(opts)));
+
+    withGlobals(program.command("qa"))
+        .description("Run the QA checks on the branch and read its merge gate (the CI gate for translation quality)")
+        .option("--branch <name>", "branch to check (overrides the config \"branch\" field and the token's default branch)")
+        .option("--fail-on <severity>", "exit 1 on issues of this severity or above: error or warning", "error")
+        .option("--json", "emit machine-readable JSON")
+        .action((opts: QaOpts) => run(() => qaCommand(opts)));
+
+    const screenshots = program.command("screenshots").description("Screenshot capture runs");
+    withGlobals(screenshots.command("upload [dir]"))
+        .description(
+            `Upload @translatize/playwright captures (<name>.json + <name>.png) as one capture run, ` +
+                `at most ${MAX_SCREENS_PER_RUN} screens (dir defaults to ${DEFAULT_CAPTURE_DIR})`,
+        )
+        .option("--branch <name>", "branch whose keys the screens are matched against (overrides the config \"branch\" field)")
+        .option("--run-name <name>", "name of the capture run (defaults to the CI ref and time)")
+        .option("--commit-sha <sha>", "commit the screens were taken from (defaults to GITHUB_SHA / CI_COMMIT_SHA)")
+        .option("--json", "emit machine-readable JSON")
+        .action((dir: string | undefined, opts: ScreenshotsUploadOpts) => run(() => screenshotsUploadCommand(dir, opts)));
+
+    withGlobals(program.command("release"))
+        .description("Publish an OTA distribution's branch to the CDN as a new version")
+        .option("--distribution <id>", "distribution id, public id or name (needed when the project has more than one)")
+        .option("--branch <name>", "pick the distribution that publishes this branch")
+        .option("--json", "emit machine-readable JSON")
+        .action((opts: ReleaseOpts) => run(() => releaseCommand(opts)));
 
     return program;
 }

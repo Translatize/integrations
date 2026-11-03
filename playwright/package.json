@@ -1,0 +1,56 @@
+{
+    "name": "@translatize/playwright",
+    "version": "0.2.0",
+    "description": "Capture localized screenshots with text positions from Playwright tests, for Translatize.",
+    "type": "module",
+    "license": "MIT",
+    "author": "SIA \"MICRON\"",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/Translatize/integrations.git",
+        "directory": "playwright"
+    },
+    "homepage": "https://translatize.com/docs",
+    "bugs": "https://github.com/Translatize/integrations/issues",
+    "main": "./dist/index.js",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js",
+            "default": "./dist/index.js"
+        },
+        "./markers": {
+            "types": "./dist/markers.d.ts",
+            "import": "./dist/markers.js",
+            "default": "./dist/markers.js"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "engines": {
+        "node": ">=18.17"
+    },
+    "keywords": [
+        "translatize",
+        "i18n",
+        "playwright",
+        "screenshots",
+        "localization"
+    ],
+    "scripts": {
+        "build": "tsc -p tsconfig.json",
+        "test": "tsc -p tsconfig.test.json && node --no-warnings --test dist-test/test/*.test.js",
+        "clean": "rm -rf dist dist-test"
+    },
+    "devDependencies": {
+        "@playwright/test": "^1.49.0",
+        "@types/node": "^20.17.0",
+        "typescript": "^5.7.2"
+    },
+    "peerDependencies": {
+        "@playwright/test": ">=1.40.0"
+    }
+}

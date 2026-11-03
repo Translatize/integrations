@@ -2,11 +2,13 @@
     "name": "translatize-integrations",
     "private": true,
     "version": "0.1.0",
-    "description": "Translatize integration packages: SDK, CLI and MCP server.",
+    "description": "Translatize integration packages: SDK, CLI, MCP server, OTA client, Playwright capture, the OTA edge Worker and the GitHub App service.",
     "workspaces": [
         "core",
         "cli",
-        "mcp"
+        "mcp",
+        "ota",
+        "playwright"
     ],
     "engines": {
         "node": ">=18.17"

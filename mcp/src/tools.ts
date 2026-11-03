@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { TranslatizeApiError } from "@translatize/core";
+import { TranslatizeApiError, type LabelContext, type MeResponse, type QaIssue } from "@translatize/core";
 import { describeApiError } from "./errors.js";
 import { isNonEmpty, matchesLabel, percent, summarizeLanguage } from "./labels.js";
 import type { Session } from "./session.js";
@@ -56,6 +56,68 @@ const mergeConflictSchema = z.object({
     customValue: z.string().optional().describe('The value to use when resolution is "custom".'),
 });
 
+/** Translator context for a key, matching the API's `context` object. */
+const contextSchema = () =>
+    z
+        .object({
+            description: z
+                .string()
+                .max(1000)
+                .optional()
+                .describe("Which UI element this is and where it appears, e.g. \"Submit button of the checkout payment form\"."),
+            charLimit: z
+                .number()
+                .int()
+                .min(1)
+                .max(10000)
+                .optional()
+                .describe("Maximum length of every translation. Set it only when the UI clearly limits the length."),
+            location: z.string().max(300).optional().describe('Where the string is used, as "path:line".'),
+            doNotTranslate: z
+                .boolean()
+                .optional()
+                .describe(
+                    "true when the text must stay the same in every language (a product name, brand or code): AI " +
+                        "translation then copies the source text instead of translating it. false clears it.",
+                ),
+        })
+        .describe("Translator context (developer role or higher). AI translation and the QA length check use it.");
+
+// The fields of a QA issue an agent needs to act on it.
+function slimIssue(issue: QaIssue): Record<string, unknown> {
+    const out: Record<string, unknown> = {
+        key: issue.key,
+        lang: issue.lang,
+        severity: issue.severity,
+        check: issue.checkId,
+        code: issue.code,
+        params: issue.params,
+        source: issue.source,
+    };
+    if (issue.message) out.message = issue.message;
+    if (issue.suggestion) out.suggestion = issue.suggestion;
+    return out;
+}
+
+// Ignored issues and the AI score rows of clean translations need no action.
+// The language translations are made from: the project's setting (servers since
+// 0.2.0 report it), else the first configured language.
+function sourceLanguageOf(me: MeResponse): string | undefined {
+    return me.sourceLanguage && me.project.langs.includes(me.sourceLanguage) ? me.sourceLanguage : me.project.langs[0];
+}
+
+function activeIssues(issues: QaIssue[] | undefined): Record<string, unknown>[] {
+    return (issues ?? []).filter((issue) => !issue.ignored && issue.code !== "ai_score").map(slimIssue);
+}
+
+// The server refuses an empty context object, so leave one out.
+function nonEmptyContext(context: LabelContext | undefined): LabelContext | undefined {
+    return context && Object.keys(context).length > 0 ? context : undefined;
+}
+
+/** Tags as the API accepts them: at most 20, each 1–50 characters. */
+const tagsArg = () => z.array(z.string().min(1).max(50)).max(20);
+
 // Each tool's title is set twice on purpose: top-level (MCP spec 2025-06-18+ clients)
 // and mirrored into annotations.title (older clients), so it shows in every client.
 
@@ -82,7 +144,7 @@ export function registerTools(server: McpServer, session: Session): void {
             ...readOnlyTool("Get Project Info"),
             description:
                 "Get an overview of the Translatize project this server is connected to: its name and id, the " +
-                "configured languages, the base branch the API token is bound to, the token's role, the branch scope " +
+                "configured languages and the source language, the base branch the API token is bound to, the token's role, the branch scope " +
                 "(fixed = only the base branch is writable; create-own = the token may also create and manage its own " +
                 "branches), the names of the branches this token may write to, the total number of label " +
                 "(translation-key) records, and per-language completeness percentages. Use this first to learn which " +
@@ -100,7 +162,7 @@ export function registerTools(server: McpServer, session: Session): void {
                     return { lang, translated, total, percent: percent(translated, total) };
                 });
                 return {
-                    project: { id: me.project.id, name: me.project.name, languages: me.project.langs },
+                    project: { id: me.project.id, name: me.project.name, languages: me.project.langs, sourceLanguage: sourceLanguageOf(me) ?? null },
                     branch: me.branch,
                     role: me.role,
                     branchScope: branches.branchScope,
@@ -263,7 +325,9 @@ export function registerTools(server: McpServer, session: Session): void {
                 "(an object of languageCode -> string), status, or tags. Every language in values must be configured " +
                 "on the project, or the call is rejected with unknown_languages. Returns whether the label was created or " +
                 "updated and its resulting stored state. Use this to add a new translation key or change an existing " +
-                "one. Writes to the token's base branch unless `branch` names another allowed branch.",
+                "one. Give every NEW key its `context` (a description of the UI element, plus charLimit/location when " +
+                "known) so translators and the AI get it right. Writes to the token's base branch unless `branch` names " +
+                "another allowed branch.",
             inputSchema: {
                 key: z.string().min(1).describe('The dotted label key, e.g. "checkout.pay_button".'),
                 values: z
@@ -271,7 +335,8 @@ export function registerTools(server: McpServer, session: Session): void {
                     .optional()
                     .describe("Per-language values as { languageCode: string }; only configured languages are allowed."),
                 status: z.string().optional().describe("Optional status string to set on the label."),
-                tags: z.array(z.string()).optional().describe("Optional tags to set on the label."),
+                tags: tagsArg().optional().describe("Optional tags to set on the label (developer role or higher)."),
+                context: contextSchema().optional(),
                 branch: branchArg(),
             },
         },
@@ -283,6 +348,7 @@ export function registerTools(server: McpServer, session: Session): void {
                         values: args.values,
                         status: args.status,
                         tags: args.tags,
+                        context: nonEmptyContext(args.context),
                     },
                     { branch: args.branch },
                 );
@@ -294,6 +360,7 @@ export function registerTools(server: McpServer, session: Session): void {
                     values: result.values,
                     status: result.status,
                     tags: result.tags,
+                    ...(result.context !== undefined ? { context: result.context } : {}),
                 };
             }),
     );
@@ -304,10 +371,11 @@ export function registerTools(server: McpServer, session: Session): void {
             ...mutatingTool("Create or Update Labels (Batch)"),
             description:
                 "Create or update many labels on a branch in one call (batched automatically, with no client-side " +
-                "size limit). Pass labels as an array of { key, values?, status?, tags? }. Returns counts of created " +
-                "and updated labels plus a failed list of any individual items the server rejected (for example, an " +
-                "unknown language on one item). Use this instead of repeated upsert_label calls when writing more than " +
-                "a couple of keys. Writes to the token's base branch unless `branch` names another allowed branch.",
+                "size limit). Pass labels as an array of { key, values?, status?, tags?, context? }. Returns counts of " +
+                "created and updated labels plus a failed list of any individual items the server rejected (for example, " +
+                "an unknown language on one item). Use this instead of repeated upsert_label calls when writing more than " +
+                "a couple of keys, and give every new key its `context` (description, plus charLimit/location when known). " +
+                "Writes to the token's base branch unless `branch` names another allowed branch.",
             inputSchema: {
                 labels: z
                     .array(
@@ -315,7 +383,8 @@ export function registerTools(server: McpServer, session: Session): void {
                             key: z.string().min(1),
                             values: z.record(z.string(), z.string()).optional(),
                             status: z.string().optional(),
-                            tags: z.array(z.string()).optional(),
+                            tags: tagsArg().optional(),
+                            context: contextSchema().optional(),
                         }),
                     )
                     .min(1)
@@ -325,7 +394,11 @@ export function registerTools(server: McpServer, session: Session): void {
         },
         async (args) =>
             run(async () => {
-                const result = await session.client.upsertLabels(args.labels, { branch: args.branch });
+                const labels = args.labels.map(({ context, ...rest }) => {
+                    const given = nonEmptyContext(context);
+                    return given ? { ...rest, context: given } : rest;
+                });
+                const result = await session.client.upsertLabels(labels, { branch: args.branch });
                 return { updated: result.updated, created: result.created, failed: result.failed };
             }),
     );
@@ -463,14 +536,23 @@ export function registerTools(server: McpServer, session: Session): void {
                 "source branch. Call delete_branch afterwards to clean it up. Strategies: overwrite (default; a " +
                 "non-destructive union where the source wins conflicts and keys only on the base are kept), keep-newer " +
                 "(whichever side changed more recently wins), manual (you supply per-conflict resolutions obtained from " +
-                "get_merge_conflicts), and replace (DESTRUCTIVE: the base becomes an exact copy of the source; use only " +
-                "when the user explicitly asks to replace). Only merge after the user has reviewed and approved the changes.",
+                "get_merge_conflicts), branch-changes (only labels created or changed on the branch since it was created " +
+                "are applied, the source winning for those; everything else on the base stays as it is and deletions are " +
+                "not carried over; the result's overlappingKeys lists merged keys the base also changed meanwhile – show " +
+                "them to the user to recheck), and replace (DESTRUCTIVE: the base becomes an exact copy of the source; use only " +
+                "when the user explicitly asks to replace). Merging into main needs an ADMIN-role token; any other token " +
+                "fails with admin_token_required_for_main, and then the user merges in the web app instead. The QA merge " +
+                "gate can refuse the merge with qa_gate_blocked: call run_qa and check_merge_gate first and fix the errors " +
+                "(tokens cannot override the gate). Only merge after the user has reviewed and approved the changes.",
             inputSchema: {
                 branch: z.string().min(1).describe("The branch to merge into the base (must be one this token created)."),
                 strategy: z
-                    .enum(["overwrite", "replace", "keep-newer", "manual"])
+                    .enum(["overwrite", "replace", "keep-newer", "manual", "branch-changes"])
                     .optional()
-                    .describe("Merge strategy (default overwrite). Use replace only when explicitly told; it is destructive."),
+                    .describe(
+                        "Merge strategy (default overwrite). branch-changes applies only what changed on the branch. Use replace " +
+                            "only when explicitly told; it is destructive.",
+                    ),
                 conflicts: z
                     .array(mergeConflictSchema)
                     .optional()
@@ -512,7 +594,7 @@ export function registerTools(server: McpServer, session: Session): void {
             description:
                 "Find labels that still need translation on a branch. For each key with at least one empty " +
                 "target-language value, returns { key, source: { lang, value }, missing: [languages] }, where the source " +
-                "language is the project's first configured language. Optionally restrict to specific `languages` and " +
+                "language is the project's source language (see get_project_info). Optionally restrict to specific `languages` and " +
                 `cap the rows with \`limit\` (default ${MISSING_TRANSLATIONS_DEFAULT_LIMIT}); the response reports the true ` +
                 "total and notes truncation. Use this to translate the missing values YOURSELF (works on any plan) and " +
                 "then write them back with upsert_labels. For server-side AI on paid plans, use auto_translate instead. " +
@@ -535,8 +617,8 @@ export function registerTools(server: McpServer, session: Session): void {
             run(async () => {
                 const me = await session.me();
                 const langs = me.project.langs;
-                const sourceLang = langs[0];
-                const requested = args.languages && args.languages.length > 0 ? args.languages : langs.slice(1);
+                const sourceLang = sourceLanguageOf(me) ?? "";
+                const requested = args.languages && args.languages.length > 0 ? args.languages : langs;
                 const targets = requested.filter((lang) => lang !== sourceLang && langs.includes(lang));
                 const limit = args.limit ?? MISSING_TRANSLATIONS_DEFAULT_LIMIT;
                 const list = await session.client.listLabels({ branch: args.branch });
@@ -585,8 +667,8 @@ export function registerTools(server: McpServer, session: Session): void {
             description:
                 "Trigger Translatize's PLATFORM AI to fill in missing translations on a branch as a background job. " +
                 "It is available only on plans that include it (professional/agency), and it is metered against the " +
-                "AI quota. Optionally scope to specific target_languages (defaults to every project language except " +
-                "the source), specific label_keys, and set overwrite_translated to re-translate values that already " +
+                "AI quota. It translates from the project's source language. Optionally scope to specific target_languages " +
+                "(defaults to every project language except the source), specific label_keys, and set overwrite_translated to re-translate values that already " +
                 "exist. Returns the started job (poll it with translation_job_status) or a no-op when nothing needs " +
                 "translating. If it fails with feature_not_available, the plan has no platform AI; fall back to " +
                 "get_missing_translations and translate the values yourself. Other failures: ai_quota_exceeded (the " +
@@ -611,22 +693,23 @@ export function registerTools(server: McpServer, session: Session): void {
         },
         async (args) =>
             run(async () => {
-                let targetLangs = args.target_languages;
-                if (!targetLangs || targetLangs.length === 0) {
-                    const me = await session.me();
-                    targetLangs = me.project.langs.slice(1);
-                }
+                // Name the source explicitly, so the job and the default targets agree on it.
+                const me = await session.me();
+                const sourceLang = sourceLanguageOf(me);
+                const requested = args.target_languages && args.target_languages.length > 0 ? args.target_languages : me.project.langs;
+                const targetLangs = requested.filter((lang) => lang !== sourceLang);
                 if (targetLangs.length === 0) {
                     return {
                         started: false,
                         nothingToTranslate: true,
                         reason: "no_target_languages",
-                        note: "The project has only one language, so there is nothing to auto-translate into.",
+                        note: `There is no language to translate into other than the source language (${sourceLang ?? "none"}).`,
                     };
                 }
                 return session.client.autoTranslate({
                     branch: args.branch,
                     targetLangs,
+                    ...(sourceLang ? { sourceLang } : {}),
                     labelKeys: args.label_keys,
                     overwriteTranslated: args.overwrite_translated,
                 });
@@ -757,5 +840,342 @@ export function registerTools(server: McpServer, session: Session): void {
                 }
                 return packet;
             }),
+    );
+
+    // ------------------------------------------------------------------------
+    // Context, glossary and translation memory
+    // ------------------------------------------------------------------------
+
+    server.registerTool(
+        "set_label_context",
+        {
+            ...mutatingTool("Set Label Context"),
+            description:
+                "Set translator context on existing keys in one batch, without touching their values: a description of " +
+                "which UI element the key is and where it appears, a charLimit when the UI clearly limits the length, the " +
+                "source location as path:line, doNotTranslate for text that stays the same in every language (product " +
+                "names, brands, codes), and tags. AI translation and the QA length check use this context, so give " +
+                "every key you create one. Only the fields you pass are sent. A key that does not exist fails with " +
+                "label_not_found (create it with upsert_labels first). Needs the developer role or higher. Writes to the " +
+                "token's base branch unless `branch` names another allowed branch.",
+            inputSchema: {
+                labels: z
+                    .array(
+                        z.object({
+                            key: z.string().min(1).describe("The existing label key."),
+                            description: z.string().max(1000).optional().describe("Which UI element this is and where it appears."),
+                            charLimit: z.number().int().min(1).max(10000).optional().describe("Maximum length of every translation."),
+                            location: z.string().max(300).optional().describe('Where the string is used, as "path:line".'),
+                            doNotTranslate: z
+                                .boolean()
+                                .optional()
+                                .describe("true: the text stays the same in every language (AI copies the source). false clears it."),
+                            tags: tagsArg().optional().describe("Tags to set (replaces the key's tags)."),
+                        }),
+                    )
+                    .min(1)
+                    .describe("One entry per key; each needs at least one of description, charLimit, location, doNotTranslate or tags."),
+                branch: branchArg(),
+            },
+        },
+        async (args) => {
+            const isEmpty = (item: (typeof args.labels)[number]): boolean =>
+                item.description === undefined &&
+                item.charLimit === undefined &&
+                item.location === undefined &&
+                item.doNotTranslate === undefined &&
+                item.tags === undefined;
+            const skipped = args.labels.filter(isEmpty).map((item) => item.key);
+            if (skipped.length === args.labels.length) {
+                return fail("Nothing to set: give each entry at least one of description, charLimit, location, doNotTranslate or tags.");
+            }
+            return run(async () => {
+                const inputs = args.labels
+                    .filter((item) => !isEmpty(item))
+                    .map((item) => {
+                        const context: LabelContext = {};
+                        if (item.description !== undefined) context.description = item.description;
+                        if (item.charLimit !== undefined) context.charLimit = item.charLimit;
+                        if (item.location !== undefined) context.location = item.location;
+                        if (item.doNotTranslate !== undefined) context.doNotTranslate = item.doNotTranslate;
+                        return {
+                            key: item.key,
+                            ...(Object.keys(context).length > 0 ? { context } : {}),
+                            ...(item.tags !== undefined ? { tags: item.tags } : {}),
+                        };
+                    });
+                const result = await session.client.upsertLabels(inputs, { branch: args.branch });
+                const out: Record<string, unknown> = { requested: args.labels.length, updated: result.updated, failed: result.failed };
+                if (skipped.length > 0) {
+                    out.skipped = skipped;
+                    out.note = "Skipped entries had nothing to set.";
+                }
+                return out;
+            });
+        },
+    );
+
+    server.registerTool(
+        "get_glossary",
+        {
+            ...readOnlyTool("Get Glossary"),
+            description:
+                "Get the project's glossary (project terms plus its workspace's): each term with its required translation " +
+                "per language, whether it is case-sensitive, and whether it is prohibited. A translation equal to the term " +
+                "means \"do not translate\"; a prohibited term must never appear in a translation. Read it before writing " +
+                "or translating copy so terminology stays consistent – the QA glossary check enforces it. Takes no arguments.",
+            inputSchema: {},
+        },
+        async () => run(async () => session.client.getGlossary()),
+    );
+
+    server.registerTool(
+        "find_translation_memory",
+        {
+            ...readOnlyTool("Find Translation Memory"),
+            description:
+                "Look up earlier approved or human-edited translations of similar source texts (fuzzy, placeholder-aware). " +
+                "For each text, returns up to 3 matches with the stored translation, a match score (100 = exact) and its " +
+                "quality. Use it when translating yourself, to reuse wording the project already uses. source_lang defaults " +
+                "to the project's source language. Takes no branch – the memory is shared across branches.",
+            inputSchema: {
+                texts: z.array(z.string().min(1).max(10000)).min(1).max(500).describe("Source texts to look up (sent in chunks of 100)."),
+                target_lang: z.string().min(1).describe("The language to find translations in."),
+                source_lang: z.string().min(1).optional().describe("The language of `texts`; defaults to the project's source language."),
+                threshold: z.number().int().min(50).max(100).optional().describe("Minimum match score, 50–100 (server default 75)."),
+            },
+        },
+        async (args) =>
+            run(async () => {
+                const sourceLang = args.source_lang ?? sourceLanguageOf(await session.me()) ?? "";
+                const result = await session.client.findTranslationMemory({
+                    texts: args.texts,
+                    sourceLang,
+                    targetLang: args.target_lang,
+                    threshold: args.threshold,
+                });
+                return { sourceLang, targetLang: args.target_lang, results: result.results };
+            }),
+    );
+
+    // ------------------------------------------------------------------------
+    // Quality: QA checks, merge gate, AI review
+    // ------------------------------------------------------------------------
+
+    server.registerTool(
+        "run_qa",
+        {
+            ...readOnlyTool("Run QA Checks"),
+            description:
+                "Run the rule-based QA checks on a branch now and return the result: counts per severity (error / warning / " +
+                "info) and the issues, each with key, language, check, code and params. Checks: placeholders, ICU syntax " +
+                "and plural categories, HTML tags, length vs charLimit, whitespace, untranslated, glossary, numbers and " +
+                "punctuation. It changes no translation. Use it after translating: fix every error (rewrite the value or fix " +
+                "its placeholders), run it again, then call check_merge_gate before merging. Pass `keys` to re-check only " +
+                "some keys. Checks the token's base branch unless `branch` names another allowed branch.",
+            inputSchema: {
+                branch: branchArg(),
+                keys: z.array(z.string().min(1)).optional().describe("Only re-check these keys."),
+            },
+        },
+        async (args) =>
+            run(async () => {
+                const result = await session.client.runQa({ branch: args.branch, keys: args.keys });
+                if (result.background === true) {
+                    return {
+                        branch: result.branch,
+                        background: true,
+                        note: "The branch is too big to check inline; QA runs in the background. Call get_qa_issues in a minute.",
+                    };
+                }
+                const issues = activeIssues(result.issues);
+                const errors = result.counts?.error ?? 0;
+                return {
+                    branch: result.branch,
+                    pairsChecked: result.pairsChecked,
+                    counts: result.counts,
+                    issues,
+                    next:
+                        errors > 0
+                            ? `Fix the ${errors} error(s) on the branch, then call run_qa again.`
+                            : "No errors. Call check_merge_gate before merging into the base branch.",
+                };
+            }),
+    );
+
+    server.registerTool(
+        "get_qa_issues",
+        {
+            ...readOnlyTool("Get QA Issues"),
+            description:
+                "List the stored QA issues of a branch, one page at a time, with the counts per severity. Filter by " +
+                "severity, key, language or source (rule = the built-in checks, ai = AI review findings). Pass nextCursor back as " +
+                "`cursor` for the next page. Reads the token's base branch unless `branch` names another allowed branch.",
+            inputSchema: {
+                branch: branchArg(),
+                severity: z.enum(["error", "warning", "info"]).optional().describe("Only this severity."),
+                key: z.string().min(1).optional().describe("Only issues on this key."),
+                lang: z.string().min(2).optional().describe("Only issues in this target language."),
+                source: z.enum(["rule", "ai"]).optional().describe("rule = QA checks, ai = AI review findings."),
+                cursor: z.string().min(1).optional().describe("The nextCursor of the previous page."),
+                limit: z.number().int().min(1).max(500).optional().describe("Page size, max 500 (default 100)."),
+            },
+        },
+        async (args) =>
+            run(async () => {
+                const page = await session.client.listQaIssues({
+                    branch: args.branch,
+                    severity: args.severity,
+                    key: args.key,
+                    lang: args.lang,
+                    source: args.source,
+                    cursor: args.cursor,
+                    limit: args.limit,
+                });
+                return { counts: page.counts, issues: activeIssues(page.issues), nextCursor: page.nextCursor };
+            }),
+    );
+
+    server.registerTool(
+        "check_merge_gate",
+        {
+            ...readOnlyTool("Check Merge Gate"),
+            description:
+                "Preview the QA merge gate for merging a branch into the token's base branch. The gate re-checks only the " +
+                "key × language pairs the merge would change. Returns its mode (off / warn / block), whether it applies " +
+                "to this target, whether it would BLOCK the merge, and the error and warning counts with the issues. When " +
+                "blocked, merge_branch fails with qa_gate_blocked until the errors are fixed. Pass the strategy you will " +
+                "give merge_branch: the pairs differ per strategy (branch-changes checks only what changed on the branch, " +
+                "overwrite every key that differs from the base). Call it after run_qa and before asking the user to " +
+                "approve a merge.",
+            inputSchema: {
+                branch: z.string().min(1).describe("The branch you want to merge into the base (the source)."),
+                strategy: z
+                    .enum(["overwrite", "replace", "keep-newer", "manual", "branch-changes"])
+                    .optional()
+                    .describe("The merge strategy to preview (default overwrite) – the same one you will pass to merge_branch."),
+            },
+        },
+        async (args) =>
+            run(async () => {
+                const { target, gate } = await session.client.getMergeGate(args.branch, { strategy: args.strategy });
+                let verdict: string;
+                if (!gate.applies) {
+                    verdict = `The gate does not apply to a merge into "${target}" (mode ${gate.mode}).`;
+                } else if (gate.blocked) {
+                    verdict = `BLOCKED: merge_branch will be refused until the ${gate.errors} error(s) are fixed on "${args.branch}".`;
+                } else if (gate.errors > 0) {
+                    verdict = `The merge will go through (mode ${gate.mode}), but tell the user about the ${gate.errors} error(s) first.`;
+                } else {
+                    verdict = "Passes – no QA errors on the changed keys.";
+                }
+                return {
+                    branch: args.branch,
+                    target,
+                    gate: {
+                        mode: gate.mode,
+                        applies: gate.applies,
+                        blocked: gate.blocked,
+                        errors: gate.errors,
+                        warnings: gate.warnings,
+                        pairsChecked: gate.pairsChecked,
+                        issues: activeIssues(gate.issues),
+                    },
+                    verdict,
+                };
+            }),
+    );
+
+    server.registerTool(
+        "start_ai_review",
+        {
+            ...mutatingTool("Start AI Review"),
+            description:
+                "Start a platform AI review of a branch's translations as a background job: each key × language pair gets a " +
+                "score and findings (accuracy, fluency, terminology, style, length, placeholders). Findings are warnings at " +
+                "most and never block a merge. Professional plan or higher, billed on its own AI review quota by the " +
+                "characters of target text reviewed – so scope it with `keys` / `langs` when you can. Needs the developer " +
+                "role. Poll ai_review_status; the findings then appear in get_qa_issues with source \"ai\". Errors: " +
+                "feature_not_available (plan), ai_review_quota_exceeded, ai_review_in_progress. Reviews the token's base " +
+                "branch unless `branch` names another allowed branch.",
+            inputSchema: {
+                branch: branchArg(),
+                keys: z.array(z.string().min(1)).optional().describe("Only review these keys."),
+                langs: z.array(z.string().min(1)).optional().describe("Only review these target languages."),
+            },
+        },
+        async (args) =>
+            run(async () => {
+                const job = await session.client.startAiReview({ branch: args.branch, keys: args.keys, langs: args.langs });
+                return { ...job, next: "Poll ai_review_status until the job is completed, then read get_qa_issues with source \"ai\"." };
+            }),
+    );
+
+    server.registerTool(
+        "ai_review_status",
+        {
+            ...readOnlyTool("AI Review Status"),
+            description:
+                "Report the project's latest AI review job: status (queued / running / completed / failed), its branch, " +
+                "progress counts (total, reviewed, failed, issues found) and the characters billed. Returns job: null when " +
+                "no review has run. Takes no arguments.",
+            inputSchema: {},
+        },
+        async () => run(async () => session.client.aiReviewStatus()),
+    );
+
+    // ------------------------------------------------------------------------
+    // Delivery (OTA)
+    // ------------------------------------------------------------------------
+
+    server.registerTool(
+        "list_distributions",
+        {
+            ...readOnlyTool("List OTA Distributions"),
+            description:
+                "List the project's over-the-air delivery distributions: id, name, the branch each one publishes, its " +
+                "format, whether it publishes all values or approved labels only, its status, the latest published " +
+                "version and the public manifest URL apps load strings from. Only distributions on branches this token may use " +
+                "are listed. Takes no arguments.",
+            inputSchema: {},
+        },
+        async () => run(async () => session.client.listDistributions()),
+    );
+
+    server.registerTool(
+        "publish_release",
+        {
+            ...destructiveTool("Publish OTA Release"),
+            description:
+                "Publish a distribution's branch to the CDN as a new version. Live apps using the Translatize OTA SDK pick " +
+                "it up on their next refresh, so this changes what end users see, and everything published is PUBLIC. " +
+                "Only call it when the user has explicitly asked to publish, and pass confirm: true – without it nothing " +
+                "is published. Needs the developer role, and the distribution's branch must be in the token's allowed set " +
+                "(otherwise branch_not_allowed). Get the id from list_distributions.",
+            inputSchema: {
+                distribution_id: z.string().min(1).describe("The distribution id from list_distributions."),
+                confirm: z
+                    .boolean()
+                    .describe("Must be true: confirms the user explicitly asked to publish this release to end users."),
+            },
+        },
+        async (args) => {
+            if (args.confirm !== true) {
+                return fail(
+                    "Not published: publish_release needs confirm: true. Ask the user to confirm that this distribution " +
+                        "should go live for end users, then call it again with confirm: true.",
+                );
+            }
+            return run(async () => {
+                const { release, manifestUrl } = await session.client.publishRelease(args.distribution_id);
+                return {
+                    published: true,
+                    version: release.version,
+                    labelCount: release.labelCount,
+                    languages: Object.keys(release.languages ?? {}),
+                    manifestUrl,
+                };
+            });
+        },
     );
 }

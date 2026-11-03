@@ -43,3 +43,36 @@ test("describeApiError collapses any 5xx code to the same generic message", () =
     assert.doesNotMatch(msg, /Bad Gateway/);
     assert.match(msg, /server-side error/);
 });
+
+test("describeApiError gives every Q4 error code a remedy that keeps the code", () => {
+    const cases: Array<[string, number, Record<string, unknown> | undefined, RegExp]> = [
+        ["qa_gate_blocked", 409, { gate: { errors: 2, mode: "block" } }, /2 QA error\(s\)[\s\S]*check_merge_gate/],
+        ["admin_token_required_for_main", 403, undefined, /admin-role API token[\s\S]*web app/],
+        ["feature_not_available", 403, { feature: "aiReview" }, /Professional[\s\S]*run_qa/],
+        ["feature_not_available", 403, { feature: "screenshotCapture" }, /Starter/],
+        ["feature_disabled", 404, undefined, /switched off/],
+        ["ai_review_quota_exceeded", 403, { used: 5, limit: 5 }, /used 5 of 5/],
+        ["ai_review_in_progress", 409, undefined, /ai_review_status/],
+        ["screenshot_quota_exceeded", 403, undefined, /storage is full/],
+        ["capture_run_limit", 429, undefined, /daily limit/],
+        ["run_screen_limit", 429, undefined, /new run/],
+        ["label_not_found", 400, undefined, /upsert_labels/],
+        ["nothing_to_review", 400, undefined, /nothing to review|no translated/i],
+        ["too_many_pairs", 400, { limit: 20000 }, /max 20000/],
+        ["nothing_to_publish", 422, { publishFilter: "approved" }, /approved labels only/],
+        ["distribution_not_found", 404, undefined, /list_distributions/],
+        ["branch_not_found", 404, undefined, /list_branches/],
+        ["invalid_request", 400, undefined, /rejected the arguments/],
+    ];
+    for (const [code, status, details, pattern] of cases) {
+        const msg = describeApiError(new TranslatizeApiError(code, status, code, details));
+        assert.ok(msg.startsWith(`Translatize API error [${code}]`), `${code} leads with its code`);
+        assert.match(msg, pattern, code);
+        assert.doesNotMatch(msg, /\u2014/, `${code}: no em dash`);
+    }
+});
+
+test("describeApiError keeps the AI-translation fallback for feature_not_available without a feature", () => {
+    const msg = describeApiError(new TranslatizeApiError("nope", 403, "feature_not_available"));
+    assert.match(msg, /get_missing_translations/);
+});

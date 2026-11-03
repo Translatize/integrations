@@ -3,11 +3,27 @@
 A [Claude Code plugin](https://code.claude.com/docs/en/plugins) that bundles the
 [`@translatize/mcp`](https://www.npmjs.com/package/@translatize/mcp) server so
 Claude Code can manage your [Translatize](https://translatize.com) translations:
-read, search and edit labels, find and fill missing translations, and work with
-git-like branches – all from inside a Claude Code session.
+read, search and edit labels with their context, fill missing translations, run QA
+checks and preview the merge gate, and work with git-like branches – all from
+inside a Claude Code session.
 
 The plugin declares a single stdio MCP server in [`.mcp.json`](.mcp.json) that
-Claude Code launches on demand with `npx -y @translatize/mcp`.
+Claude Code launches on demand with `npx -y @translatize/mcp`, and two skills.
+
+## Skills
+
+| Skill | When Claude uses it | What it does |
+| --- | --- | --- |
+| [`localize-repo`](skills/localize-repo/SKILL.md) | You ask to localize or internationalize an app, add languages, or extract hardcoded strings. | Ten steps: detect the i18n library, find hardcoded strings, propose dotted keys, `create_branch` `agent-<topic>`, upsert source labels **with context**, replace the strings in code, `auto_translate`, `run_qa` and fix errors, `check_merge_gate`, then summarise. It never merges into `main` without your approval. |
+| [`translatize-strings`](skills/translatize-strings/SKILL.md) | Any time Claude adds or changes user-visible text. | The day-to-day rules: no hardcoded UI strings, keys created through the MCP server with a description and char limit, dotted key names, work on a branch, QA before merge. |
+
+The same rules can live in your repository for every coding agent:
+`npx @translatize/cli init --agents` writes them into a marked section of
+`AGENTS.md` (and `CLAUDE.md`, when it exists).
+
+The server also offers two MCP prompts, `localize_repo` and
+`prepare_branch_for_merge`, which show up as slash commands in clients that
+support prompts.
 
 ## Requirements
 
@@ -85,8 +101,15 @@ Start Claude Code and confirm the server is connected:
 
 You should see the `translatize` server and its tools. Then try a prompt such as
 "What languages does this Translatize project support, and how complete is each
-one?". The full tool list and agentic workflow are documented in the
-[`@translatize/mcp` README](https://www.npmjs.com/package/@translatize/mcp).
+one?", or "Localize the checkout page into Latvian and German" to run the
+`localize-repo` skill. The full tool list and agentic workflow are documented in
+the [`@translatize/mcp` README](https://www.npmjs.com/package/@translatize/mcp).
+
+Validate the plugin after any change:
+
+```bash
+claude plugin validate integrations/claude-plugin
+```
 
 ## Privacy
 

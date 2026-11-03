@@ -1,5 +1,5 @@
-import { existsSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { TranslatizeClient, TranslatizeApiError } from "@translatize/core";
 import {
     DEFAULT_API_URL,
@@ -11,7 +11,8 @@ import {
     serializeConfig,
     validateConfig,
 } from "../config.js";
-import { createColors, describeApiError, info } from "../ui.js";
+import { writeAgentFiles } from "../agents.js";
+import { createColors, describeApiError, info, type Colors } from "../ui.js";
 import type { GlobalOpts } from "./shared.js";
 
 export interface InitOpts extends GlobalOpts {
@@ -19,6 +20,7 @@ export interface InitOpts extends GlobalOpts {
     files?: string;
     format?: string;
     force?: boolean;
+    agents?: boolean;
 }
 
 /** `translatize init` – scaffold translatize.config.json, validating the token when available. */
@@ -27,8 +29,25 @@ export async function initCommand(opts: InitOpts): Promise<number> {
     const configPath = opts.config ?? DEFAULT_CONFIG_PATH;
     const abs = resolve(configPath);
 
-    if (existsSync(abs) && !opts.force) {
+    if (opts.agents) {
+        return initAgents(colors, dirname(abs));
+    }
+
+    const exists = existsSync(abs);
+    if (exists && !opts.force) {
         throw new UsageError(`${configPath} already exists. Re-run with --force to overwrite it.`);
+    }
+
+    // `--force` rewrites the file from these flags; keep any top-level keys this
+    // CLI version does not know about (e.g. the GitHub App's "github" block) so
+    // rewriting the config does not silently drop another tool's settings.
+    let extra: Record<string, unknown> | undefined;
+    if (exists) {
+        try {
+            extra = validateConfig(JSON.parse(readFileSync(abs, "utf8")), configPath).extra;
+        } catch {
+            // Existing file is unreadable or invalid – nothing to carry forward.
+        }
     }
 
     const format = opts.format ?? DEFAULT_FORMAT;
@@ -69,7 +88,7 @@ export async function initCommand(opts: InitOpts): Promise<number> {
         }
     }
 
-    const config = validateConfig({ apiUrl, projectId, format, files }, "init");
+    const config = validateConfig({ apiUrl, projectId, format, files, ...extra }, "init");
     writeFileSync(abs, serializeConfig(config), "utf8");
     info(colors.green("Wrote ") + configPath);
 
@@ -93,5 +112,26 @@ export async function initCommand(opts: InitOpts): Promise<number> {
             ),
         );
     }
+    return 0;
+}
+
+/**
+ * `translatize init --agents` – write the coding-agent rules into AGENTS.md (and
+ * CLAUDE.md when the project has one), next to the config file. Leaves the config
+ * alone, so it can be re-run at any time to refresh the section.
+ */
+function initAgents(colors: Colors, dir: string): number {
+    const results = writeAgentFiles(dir);
+    for (const { file, action } of results) {
+        const verb =
+            action === "created" ? "Created" : action === "appended" ? "Added the Translatize section to" : action === "updated" ? "Updated the Translatize section in" : "Already up to date:";
+        info(`${action === "unchanged" ? colors.dim(verb) : colors.green(verb)} ${file}`);
+    }
+    if (!results.some((r) => r.file === "CLAUDE.md")) {
+        info(colors.dim("No CLAUDE.md here. For Claude Code, add a CLAUDE.md with the line @AGENTS.md, or install the Translatize plugin."));
+    }
+    info("");
+    info("Coding agents now get the Translatize rules: no hardcoded strings, keys with context, branches and QA before merge.");
+    info(`Connect them to the Translatize MCP server: ${colors.bold("claude mcp add translatize -e TRANSLATIZE_API_TOKEN=mcni_xxx -- npx -y @translatize/mcp")}`);
     return 0;
 }

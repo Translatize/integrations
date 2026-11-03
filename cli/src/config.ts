@@ -16,7 +16,15 @@ export interface TranslatizeConfig {
      * absent, commands operate on the token's bound branch. Overridden by `--branch`.
      */
     branch?: string;
+    /**
+     * Top-level keys this CLI version does not know about (e.g. the GitHub App's
+     * "github" block) – carried through unchanged so `loadConfig` + `serializeConfig`
+     * (and `init --force`) round-trip them instead of silently dropping them.
+     */
+    extra?: Record<string, unknown>;
 }
+
+const KNOWN_TOP_LEVEL_KEYS = new Set(["apiUrl", "projectId", "format", "files", "namespace", "branch"]);
 
 export const DEFAULT_CONFIG_PATH = "translatize.config.json";
 export const DEFAULT_API_URL = "https://api.translatize.com/v1";
@@ -111,7 +119,20 @@ export function validateConfig(raw: unknown, source = "config"): TranslatizeConf
         }
     }
 
-    return { apiUrl, projectId, format, files, namespace, branch };
+    // Other keys – such as the optional "github" block the GitHub App reads – are
+    // accepted and carried through verbatim in `extra`, so one config file serves
+    // both tools and rewriting it (e.g. `init --force`) does not drop them.
+    let extra: Record<string, unknown> | undefined;
+    for (const key of Object.keys(raw)) {
+        if (KNOWN_TOP_LEVEL_KEYS.has(key)) continue;
+        (extra ??= {})[key] = raw[key];
+    }
+
+    const config: TranslatizeConfig = { apiUrl, projectId, format, files, namespace, branch };
+    if (extra) {
+        config.extra = extra;
+    }
+    return config;
 }
 
 /** Read, JSON-parse and validate a config file. Throws {@link ConfigError} on any failure. */
@@ -147,6 +168,9 @@ export function serializeConfig(config: TranslatizeConfig): string {
     }
     if (config.branch !== undefined) {
         ordered.branch = config.branch;
+    }
+    if (config.extra) {
+        Object.assign(ordered, config.extra);
     }
     return JSON.stringify(ordered, null, 2) + "\n";
 }

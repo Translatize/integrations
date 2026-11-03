@@ -1,5 +1,26 @@
 import { TranslatizeApiError } from "@translatize/core";
 
+// feature_not_available names the missing plan feature in `feature`; without one it is AI translation.
+function featureRemedy(feature: string | undefined): string {
+    switch (feature) {
+        case undefined:
+        case "autoTranslation":
+            return (
+                "This project's plan does not include platform AI auto-translation. Do the translation yourself instead: call " +
+                "get_missing_translations to see what is untranslated, translate the values, and write them with upsert_labels."
+            );
+        case "aiReview":
+            return (
+                "AI review needs the Professional or Agency plan. Rule-based QA (run_qa) works on every plan; you can also " +
+                "review the translations yourself from get_labels."
+            );
+        case "screenshotCapture":
+            return "Automated screenshot capture needs the Starter plan or higher. Screenshots can still be uploaded by hand in the web app.";
+        default:
+            return `This project's plan does not include the "${feature}" feature. Tell the user; it needs a plan upgrade.`;
+    }
+}
+
 /**
  * Turn a {@link TranslatizeApiError} into one actionable sentence, led by the machine-readable
  * code so the agent can branch on it before reading the remedy. Server-side (5xx) failures are
@@ -65,9 +86,77 @@ export function describeApiError(err: TranslatizeApiError): string {
                 "then delete_branch), or ask the owner to upgrade the plan.";
             break;
         case "feature_not_available":
+            remedy = featureRemedy(typeof err.details?.feature === "string" ? err.details.feature : undefined);
+            break;
+        case "feature_disabled":
             remedy =
-                "This project's plan does not include platform AI auto-translation. Do the translation yourself instead: call " +
-                "get_missing_translations to see what is untranslated, translate the values, and write them with upsert_labels.";
+                "This feature is switched off on this Translatize server. Skip this step and tell the user; the rest of " +
+                "the tools still work.";
+            break;
+        case "qa_gate_blocked": {
+            const gate = err.details?.gate as { errors?: unknown; mode?: unknown } | undefined;
+            const errors = typeof gate?.errors === "number" ? `${gate.errors} QA error(s)` : "QA errors";
+            remedy =
+                `The QA merge gate blocks this merge: ${errors} on the keys it would change. Call check_merge_gate (or ` +
+                "run_qa on the branch) to list them, fix each one on the branch (rewrite the value or fix its placeholders), " +
+                "then try again. API tokens can never override the gate; an admin can override it in the web app with a reason.";
+            break;
+        }
+        case "admin_token_required_for_main":
+            remedy =
+                "Merging into main needs an admin-role API token, and this token is not one. Do not retry. Tell the user: " +
+                "they can merge the branch in the Translatize web app (review_changes gives the link), or issue an admin token.";
+            break;
+        case "ai_review_quota_exceeded": {
+            const numericDetail = (key: string): string =>
+                typeof err.details?.[key] === "number" ? String(err.details[key]) : "?";
+            remedy =
+                `The AI review quota is used up for this month (used ${numericDetail("used")} of ${numericDetail("limit")}). ` +
+                "Rule-based QA (run_qa) still works. Tell the user; the quota resets next month or with a plan upgrade.";
+            break;
+        }
+        case "ai_review_in_progress":
+            remedy = "An AI review is already running for this project. Poll ai_review_status and retry once it has finished.";
+            break;
+        case "screenshot_quota_exceeded":
+            remedy =
+                "The plan's screenshot storage is full; new screenshots are refused and existing ones are kept. Tell the user " +
+                "to delete old screenshots (Project Settings -> Screenshots) or upgrade the plan.";
+            break;
+        case "capture_run_limit":
+            remedy = "The project has reached its daily limit of screenshot capture runs. Try again tomorrow (UTC).";
+            break;
+        case "run_screen_limit":
+            remedy = "This capture run is full. Upload the remaining screens in a new run.";
+            break;
+        case "nothing_to_review":
+            remedy = "There are no translated values to review in that scope. Translate first, or widen `keys` / `langs`.";
+            break;
+        case "too_many_pairs": {
+            const limit = typeof err.details?.limit === "number" ? ` (max ${err.details.limit} key × language pairs)` : "";
+            remedy = `That AI review is too big${limit}. Call start_ai_review again with fewer \`keys\` or \`langs\`.`;
+            break;
+        }
+        case "nothing_to_publish":
+            remedy =
+                err.details?.publishFilter === "approved"
+                    ? "Nothing to publish: the distribution publishes approved labels only, and none on its branch are approved. " +
+                      "Approve them first (set_labels_status), with the user's go-ahead."
+                    : "Nothing to publish: the distribution's branch has no translated values yet.";
+            break;
+        case "distribution_not_found":
+            remedy = "That distribution does not exist. Call list_distributions and use one of its ids.";
+            break;
+        case "source_branch_not_found":
+            remedy = "That branch does not exist in the project. Call list_branches to see the existing ones.";
+            break;
+        case "invalid_request":
+            remedy = `The server rejected the arguments: ${err.message}. Fix them and retry.`;
+            break;
+        case "label_not_found":
+            remedy =
+                "That key does not exist on the branch, so its context cannot be set. Create it first with upsert_labels " +
+                "(with its source value), or check the key name with search_labels.";
             break;
         case "ai_quota_exceeded": {
             const numericDetail = (key: string): string =>
@@ -99,8 +188,9 @@ export function describeApiError(err: TranslatizeApiError): string {
             break;
         case "insufficient_permissions":
             remedy =
-                "The token's role does not permit this operation (for example, a translator-role token cannot create new source keys). " +
-                "A token with a higher role is required.";
+                "The token's role does not permit this operation (for example, a translator-role token cannot set context or " +
+                "tags, and creating or merging branches, starting an AI review or publishing a release needs the developer " +
+                "role). A token with a higher role is required.";
             break;
         case "project_mismatch":
             remedy = "The token does not belong to that project. This server only operates on the token's own project.";
@@ -114,8 +204,10 @@ export function describeApiError(err: TranslatizeApiError): string {
             remedy = "Too many labels in a single request. Split the write into smaller batches and retry.";
             break;
         case "project_not_found":
+            remedy = "The token's project was not found – it may have been deleted. Ask the user to check the token.";
+            break;
         case "branch_not_found":
-            remedy = err.message;
+            remedy = "That branch does not exist in the project. Call list_branches to see the existing ones.";
             break;
         case "timeout":
             remedy = "The request to the Translatize API timed out. Check network connectivity and the TRANSLATIZE_API_URL value.";

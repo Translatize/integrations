@@ -1,7 +1,7 @@
 {
     "name": "translatize",
-    "description": "Manage Translatize translations from Claude Code: read, search and edit labels, fill missing translations, and work with git-like branches via the Translatize MCP server.",
-    "version": "0.1.3",
+    "description": "Manage Translatize translations from Claude Code: keys with context, AI translation, QA checks and the merge gate on git-like branches, plus skills to localize a repository and keep UI strings out of code.",
+    "version": "0.2.0",
     "author": {
         "name": "SIA \"MICRON\"",
         "email": "support@translatize.com",
@@ -14,6 +14,8 @@
         "i18n",
         "localization",
         "translatize",
-        "mcp"
+        "mcp",
+        "qa",
+        "agents"
     ]
 }

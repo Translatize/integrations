@@ -155,3 +155,36 @@ test("resolveBranch: flag beats config field beats undefined (token default), tr
     assert.equal(resolveBranch({ branch: undefined }, undefined), undefined);
     assert.equal(resolveBranch({}, ""), undefined);
 });
+
+test("validateConfig: accepts the optional GitHub App block, keeps it out of the known fields but preserves it in extra", () => {
+    const github = { sourceLanguage: "en", autoTranslate: true, commitTranslations: "on-request", requireComplete: false, syncDefaultBranch: true };
+    const cfg = validateConfig({
+        projectId: "p1",
+        format: "json-nested",
+        files: "locales/{lang}.json",
+        github,
+    });
+    assert.equal(cfg.projectId, "p1");
+    assert.equal("github" in cfg, false);
+    assert.deepEqual(cfg.extra, { github });
+});
+
+test("validateConfig: a config with no unknown keys has no extra property", () => {
+    const cfg = validateConfig({ format: "json-flat", files: "{lang}.json" });
+    assert.equal("extra" in cfg, false);
+});
+
+test("serializeConfig: unknown top-level keys (extra) survive a round-trip after the known fields", () => {
+    const github = { sourceLanguage: "en", autoTranslate: true };
+    const text = serializeConfig({
+        apiUrl: "u",
+        projectId: "p",
+        format: "json-flat",
+        files: "{lang}.json",
+        extra: { github },
+    });
+    const reparsed = validateConfig(JSON.parse(text));
+    assert.deepEqual(reparsed.extra, { github });
+    // Known fields still come first, in their stable order.
+    assert.ok(text.indexOf('"files"') < text.indexOf('"github"'));
+});

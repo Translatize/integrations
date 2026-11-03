@@ -1,12 +1,14 @@
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { TranslatizeClient, TranslatizeApiError } from "../src/index.js";
+import { TranslatizeClient, TranslatizeApiError, type MergeGateSummary } from "../src/index.js";
 
 interface MockCall {
     url: string;
     method: string;
     headers: Record<string, string>;
     body: string | undefined;
+    /** The body exactly as passed to fetch (a FormData for multipart uploads). */
+    rawBody: unknown;
 }
 
 interface MockResponseSpec {
@@ -40,7 +42,8 @@ function installFetchMock(router: Router): MockCall[] {
             url,
             method,
             headers: normalizeHeaders(init.headers),
-            body: init.body as string | undefined,
+            body: typeof init.body === "string" ? init.body : undefined,
+            rawBody: init.body,
         };
         calls.push(call);
         const spec = router(call);
@@ -84,7 +87,7 @@ test("me(): sends auth + user-agent headers and parses the response", async () =
     assert.equal(calls[0].url, "https://api.example.com/v1/integrations/me");
     assert.equal(calls[0].method, "GET");
     assert.equal(calls[0].headers["authorization"], "Bearer mcni_abc");
-    assert.equal(calls[0].headers["user-agent"], "translatize-core/0.1.3");
+    assert.equal(calls[0].headers["user-agent"], "translatize-core/0.2.0");
 });
 
 test("trailing slash in apiUrl is tolerated", async () => {
@@ -407,6 +410,16 @@ test("mergeBranch(): POSTs strategy + conflicts and never sends `target`", async
     assert.equal("target" in body, false);
 });
 
+test("mergeBranch(): branch-changes is sent as given and overlappingKeys come back", async () => {
+    const resp = { message: "ok", source: "pr-7", target: "main", strategy: "branch-changes", overlappingKeys: ["home.title"], overlappingCount: 1 };
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: resp });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const out = await client.mergeBranch("pr-7", { strategy: "branch-changes" });
+    assert.deepEqual(JSON.parse(calls[1].body as string), { strategy: "branch-changes" });
+    assert.deepEqual(out.overlappingKeys, ["home.title"]);
+    assert.equal(out.overlappingCount, 1);
+});
+
 test("mergeBranch(): default options send an empty body (server defaults to overwrite)", async () => {
     const calls = installFetchMock((call) => meRoute(call) ?? { json: { message: "ok", source: "feature", target: "main", strategy: "overwrite" } });
     const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
@@ -423,6 +436,48 @@ test("deleteBranch(): sends a DELETE to .../branches/:name", async () => {
     assert.equal(calls[1].url, "https://api.example.com/v1/integrations/projects/proj123/branches/feature");
 });
 
+test("rebaseLabels(): POSTs keys + langs to .../branches/:name/labels/rebase", async () => {
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: { rebased: 1, notFound: [] } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const out = await client.rebaseLabels("pr-7", ["auth.logout"], { langs: ["en"] });
+    assert.deepEqual(out, { rebased: 1, notFound: [] });
+    assert.equal(calls[1].method, "POST");
+    assert.equal(calls[1].url, "https://api.example.com/v1/integrations/projects/proj123/branches/pr-7/labels/rebase");
+    assert.deepEqual(JSON.parse(calls[1].body as string), { keys: ["auth.logout"], langs: ["en"] });
+});
+
+test("rebaseLabels(): omits `langs` when not given", async () => {
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: { rebased: 1, notFound: [] } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    await client.rebaseLabels("pr-7", ["a.key"]);
+    assert.deepEqual(JSON.parse(calls[1].body as string), { keys: ["a.key"] });
+});
+
+test("rebaseLabels(): chunks 501 keys into batches of 500 + 1 and aggregates rebased/notFound", async () => {
+    const batchSizes: number[] = [];
+    installFetchMock((call) => {
+        const me = meRoute(call);
+        if (me) return me;
+        const parsed = JSON.parse(call.body as string) as { keys: string[] };
+        batchSizes.push(parsed.keys.length);
+        return { json: { rebased: parsed.keys.length - 1, notFound: [parsed.keys[0]] } };
+    });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const keys = Array.from({ length: 501 }, (_, i) => `k${i}`);
+    const result = await client.rebaseLabels("pr-7", keys);
+    assert.deepEqual(batchSizes, [500, 1]);
+    assert.equal(result.rebased, 499);
+    assert.deepEqual(result.notFound, ["k0", "k500"]);
+});
+
+test("rebaseLabels(): empty `keys` makes no network call", async () => {
+    const calls = installFetchMock(() => ({ json: {} }));
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const result = await client.rebaseLabels("pr-7", []);
+    assert.deepEqual(result, { rebased: 0, notFound: [] });
+    assert.equal(calls.length, 0);
+});
+
 test("branch methods reject a blank branch name without a network call", async () => {
     const calls = installFetchMock(() => ({ json: {} }));
     const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
@@ -430,6 +485,7 @@ test("branch methods reject a blank branch name without a network call", async (
     await assert.rejects(() => client.branchConflicts("   "), /branch name/);
     await assert.rejects(() => client.mergeBranch(""), /branch name/);
     await assert.rejects(() => client.deleteBranch(""), /branch name/);
+    await assert.rejects(() => client.rebaseLabels("", ["a"]), /branch name/);
     assert.equal(calls.length, 0);
 });
 
@@ -497,4 +553,409 @@ test("translationStatus(): GETs .../translation/status and parses activeJob/last
     assert.equal(out.lastJob?.status, "completed");
     assert.equal(calls[1].method, "GET");
     assert.equal(calls[1].url, "https://api.example.com/v1/integrations/projects/proj123/translation/status");
+});
+
+// ============================================================================
+// 0.2.0 – extra headers, label context
+// ============================================================================
+
+const BASE = "https://api.example.com/v1/integrations/projects/proj123";
+
+test("headers option: extra headers go out on every request, including the me() lookup", async () => {
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: { terms: [] } });
+    const client = new TranslatizeClient({
+        apiUrl: "https://api.example.com/v1",
+        token: "mcni_abc",
+        headers: { "X-Internal-Token": "secret-123" },
+    });
+    await client.getGlossary();
+    assert.equal(calls.length, 2);
+    for (const call of calls) {
+        assert.equal(call.headers["x-internal-token"], "secret-123");
+        assert.equal(call.headers["authorization"], "Bearer mcni_abc");
+    }
+});
+
+test("headers option: may replace User-Agent case-insensitively, never Authorization or Content-Type", async () => {
+    const calls = installFetchMock(() => ({ json: ME_RESPONSE }));
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t", headers: { "user-agent": "github-app/1" } });
+    await client.me();
+    assert.equal(calls[0].headers["user-agent"], "github-app/1");
+    assert.throws(() => new TranslatizeClient({ apiUrl: "x", token: "t", headers: { authorization: "Bearer other" } }), /cannot be overridden/);
+    assert.throws(() => new TranslatizeClient({ apiUrl: "x", token: "t", headers: { "Content-Type": "text/plain" } }), /cannot be overridden/);
+});
+
+test("upsertLabel(): sends context and tags as given", async () => {
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: { key: "a", branch: "main", created: false, values: {}, status: "draft", tags: ["ui"] } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    await client.upsertLabel({
+        key: "checkout.pay",
+        values: { en: "Pay now" },
+        tags: ["ui"],
+        context: { description: "Primary button on the checkout page", charLimit: 20, location: "src/Checkout.tsx:42" },
+    });
+    assert.deepEqual(JSON.parse(calls[1].body as string), {
+        key: "checkout.pay",
+        values: { en: "Pay now" },
+        tags: ["ui"],
+        context: { description: "Primary button on the checkout page", charLimit: 20, location: "src/Checkout.tsx:42" },
+    });
+});
+
+test("upsertLabels(): context-only items are sent without values", async () => {
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: { updated: 1, created: 0, failed: [{ key: "gone", error: "label_not_found" }] } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const out = await client.upsertLabels([{ key: "a", context: { charLimit: 30 } }, { key: "gone", tags: ["x"] }], { branch: "feature" });
+    assert.deepEqual(JSON.parse(calls[1].body as string), {
+        labels: [{ key: "a", context: { charLimit: 30 } }, { key: "gone", tags: ["x"] }],
+        branch: "feature",
+    });
+    assert.deepEqual(out.failed, [{ key: "gone", error: "label_not_found" }]);
+});
+
+// ============================================================================
+// 0.2.0 – glossary + translation memory
+// ============================================================================
+
+test("getGlossary(): GETs .../glossary", async () => {
+    const terms = [{ id: "g1", term: "Translatize", translations: { lv: "Translatize" }, description: null, caseSensitive: true, prohibited: false, category: null, scope: "workspace" }];
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: { terms } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const out = await client.getGlossary();
+    assert.equal(out.terms[0].scope, "workspace");
+    assert.equal(calls[1].method, "GET");
+    assert.equal(calls[1].url, `${BASE}/glossary`);
+});
+
+test("findTranslationMemory(): POSTs texts + langs (+ threshold) to .../tm/matches", async () => {
+    const results = [{ text: "Save", matches: [{ sourceText: "Save", targetText: "Saglabāt", match: 100, quality: 1, placeholderMapped: false, origin: "approved" }] }];
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: { results } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const out = await client.findTranslationMemory({ texts: ["Save"], sourceLang: "en", targetLang: "lv", threshold: 90 });
+    assert.equal(out.results[0].matches[0].targetText, "Saglabāt");
+    assert.equal(calls[1].method, "POST");
+    assert.equal(calls[1].url, `${BASE}/tm/matches`);
+    assert.deepEqual(JSON.parse(calls[1].body as string), { texts: ["Save"], sourceLang: "en", targetLang: "lv", threshold: 90 });
+});
+
+test("findTranslationMemory(): chunks 101 texts into 100 + 1 and keeps the result order", async () => {
+    const sizes: number[] = [];
+    installFetchMock((call) => {
+        const me = meRoute(call);
+        if (me) return me;
+        const parsed = JSON.parse(call.body as string) as { texts: string[]; threshold?: number };
+        sizes.push(parsed.texts.length);
+        assert.equal("threshold" in parsed, false);
+        return { json: { results: parsed.texts.map((text) => ({ text, matches: [] })) } };
+    });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const texts = Array.from({ length: 101 }, (_, i) => `t${i}`);
+    const out = await client.findTranslationMemory({ texts, sourceLang: "en", targetLang: "lv" });
+    assert.deepEqual(sizes, [100, 1]);
+    assert.deepEqual(out.results.map((r) => r.text), texts);
+});
+
+test("findTranslationMemory(): empty texts make no call; missing langs throw", async () => {
+    const calls = installFetchMock(() => ({ json: {} }));
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    assert.deepEqual(await client.findTranslationMemory({ texts: [], sourceLang: "en", targetLang: "lv" }), { results: [] });
+    await assert.rejects(() => client.findTranslationMemory({ texts: ["a"], sourceLang: "en", targetLang: "" }), /targetLang/);
+    assert.equal(calls.length, 0);
+});
+
+// ============================================================================
+// 0.2.0 – QA, merge gate, AI review
+// ============================================================================
+
+const ISSUE = {
+    id: "i1", branch: "feature", key: "app.count", lang: "lv", checkId: "placeholders", severity: "error",
+    code: "placeholder_missing", params: { missing: ["{count}"] }, source: "rule", ignored: false, createdAt: "2026-10-27T00:00:00.000Z",
+};
+
+test("runQa(): POSTs branch + keys to .../qa/run and returns the inline result", async () => {
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: { branch: "feature", pairsChecked: 4, counts: { error: 1, warning: 0, info: 0 }, issues: [ISSUE] } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const out = await client.runQa({ branch: "feature", keys: ["app.count"] });
+    assert.equal(out.background, undefined);
+    if (out.background !== true) {
+        assert.equal(out.counts.error, 1);
+        assert.equal(out.issues[0].code, "placeholder_missing");
+    }
+    assert.equal(calls[1].method, "POST");
+    assert.equal(calls[1].url, `${BASE}/qa/run`);
+    assert.deepEqual(JSON.parse(calls[1].body as string), { branch: "feature", keys: ["app.count"] });
+});
+
+test("runQa(): no options send an empty body; a 202 background answer is passed through", async () => {
+    const calls = installFetchMock((call) => meRoute(call) ?? { status: 202, json: { branch: "main", background: true } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const out = await client.runQa();
+    assert.equal(out.background, true);
+    assert.deepEqual(JSON.parse(calls[1].body as string), {});
+});
+
+test("listQaIssues(): sends every filter as a query param, numbers stringified", async () => {
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: { issues: [ISSUE], nextCursor: "c2", counts: { error: 1, warning: 0, info: 0 } } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const out = await client.listQaIssues({ branch: "feature", severity: "error", key: "app.count", source: "rule", cursor: "c1", limit: 50 });
+    assert.equal(out.nextCursor, "c2");
+    assert.equal(
+        calls[1].url,
+        `${BASE}/qa/issues?branch=feature&severity=error&key=app.count&source=rule&cursor=c1&limit=50`,
+    );
+});
+
+test("listQaIssues(): omits filters that are not given", async () => {
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: { issues: [], nextCursor: null, counts: { error: 0, warning: 0, info: 0 } } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    await client.listQaIssues();
+    assert.equal(calls[1].url, `${BASE}/qa/issues`);
+});
+
+test("getMergeGate(): GETs .../branches/:name/merge-gate with the name encoded", async () => {
+    const gate = { mode: "block", applies: true, blocked: true, errors: 1, warnings: 0, pairsChecked: 3, issues: [ISSUE] };
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: { target: "main", gate } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const out = await client.getMergeGate("agent-copy");
+    assert.equal(out.target, "main");
+    assert.equal(out.gate.blocked, true);
+    assert.equal(calls[1].method, "GET");
+    assert.equal(calls[1].url, `${BASE}/branches/agent-copy/merge-gate`);
+    await assert.rejects(() => client.getMergeGate(" "), /branch name/);
+});
+
+test("getMergeGate(): previews the strategy the merge will use", async () => {
+    const gate = { mode: "warn", applies: true, blocked: false, errors: 0, warnings: 0, pairsChecked: 1, issues: [] };
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: { target: "main", gate } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    await client.getMergeGate("pr-7", { strategy: "branch-changes" });
+    assert.equal(calls[1].url, `${BASE}/branches/pr-7/merge-gate?strategy=branch-changes`);
+});
+
+test("mergeBranch(): a gate that could not run comes back as the warn-mode error shape", async () => {
+    const unavailable = { mode: "warn", applies: true, error: "gate_unavailable" };
+    installFetchMock((call) => meRoute(call) ?? { json: { message: "ok", source: "feature", target: "main", strategy: "overwrite", gate: unavailable } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const out = await client.mergeBranch("feature");
+    // Narrowed by `error`: the counts exist only on a gate that ran.
+    const errorsOf = (gate: MergeGateSummary): number | null => (gate.error ? null : gate.errors);
+    assert.ok(out.gate);
+    assert.equal(errorsOf(out.gate), null);
+    assert.equal(errorsOf({ mode: "block", applies: true, blocked: true, errors: 2, warnings: 0, pairsChecked: 3, overridden: false }), 2);
+    assert.deepEqual(out.gate, unavailable);
+});
+
+test("mergeBranch(): a 409 qa_gate_blocked keeps the gate in details; 403 admin_token_required_for_main maps", async () => {
+    const gate = { mode: "block", applies: true, blocked: true, errors: 2, warnings: 0, pairsChecked: 3, issues: [] };
+    let answer: MockResponseSpec = { status: 409, json: { error: "qa_gate_blocked", gate } };
+    installFetchMock((call) => meRoute(call) ?? answer);
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    await assert.rejects(
+        () => client.mergeBranch("feature"),
+        (err: unknown) => {
+            assert.ok(err instanceof TranslatizeApiError);
+            assert.equal(err.status, 409);
+            assert.equal(err.code, "qa_gate_blocked");
+            assert.deepEqual((err.details as { gate: unknown }).gate, gate);
+            return true;
+        },
+    );
+    answer = { status: 403, json: { error: "admin_token_required_for_main" } };
+    await assert.rejects(
+        () => client.mergeBranch("feature"),
+        (err: unknown) => err instanceof TranslatizeApiError && err.status === 403 && err.code === "admin_token_required_for_main",
+    );
+});
+
+test("startAiReview(): POSTs branch/keys/langs to .../qa/ai-review", async () => {
+    const calls = installFetchMock((call) => meRoute(call) ?? { status: 202, json: { jobId: "r1", status: "queued", pairs: 10, estimatedCharacters: 420 } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const out = await client.startAiReview({ branch: "feature", keys: ["a"], langs: ["lv"] });
+    assert.equal(out.jobId, "r1");
+    assert.equal(calls[1].method, "POST");
+    assert.equal(calls[1].url, `${BASE}/qa/ai-review`);
+    assert.deepEqual(JSON.parse(calls[1].body as string), { branch: "feature", keys: ["a"], langs: ["lv"] });
+});
+
+test("startAiReview(): plan and quota errors keep their code and details", async () => {
+    let answer: MockResponseSpec = { status: 403, json: { error: "feature_not_available", feature: "aiReview" } };
+    installFetchMock((call) => meRoute(call) ?? answer);
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    await assert.rejects(
+        () => client.startAiReview(),
+        (err: unknown) => err instanceof TranslatizeApiError && err.code === "feature_not_available" && err.details?.feature === "aiReview",
+    );
+    answer = { status: 403, json: { error: "ai_review_quota_exceeded", used: 10, limit: 10 } };
+    await assert.rejects(
+        () => client.startAiReview(),
+        (err: unknown) => err instanceof TranslatizeApiError && err.code === "ai_review_quota_exceeded" && err.details?.limit === 10,
+    );
+});
+
+test("aiReviewStatus(): GETs .../qa/ai-review/status", async () => {
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: { job: null } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const out = await client.aiReviewStatus();
+    assert.equal(out.job, null);
+    assert.equal(calls[1].url, `${BASE}/qa/ai-review/status`);
+});
+
+// ============================================================================
+// 0.2.0 – screenshot capture runs
+// ============================================================================
+
+test("createScreenshotRun(): POSTs name/branch/commitSha; a blank name throws first", async () => {
+    const calls = installFetchMock((call) => meRoute(call) ?? { status: 201, json: { runId: "run1" } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const out = await client.createScreenshotRun({ name: "e2e", branch: "feature", commitSha: "abc123" });
+    assert.equal(out.runId, "run1");
+    assert.equal(calls[1].method, "POST");
+    assert.equal(calls[1].url, `${BASE}/screenshots/runs`);
+    assert.deepEqual(JSON.parse(calls[1].body as string), { name: "e2e", branch: "feature", commitSha: "abc123" });
+    await assert.rejects(() => client.createScreenshotRun({ name: "" }), /name/);
+    assert.equal(calls.length, 2);
+});
+
+test("createScreenshotRun(): 429 capture_run_limit maps to the error code", async () => {
+    installFetchMock((call) => meRoute(call) ?? { status: 429, json: { error: "capture_run_limit", limit: 30 } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    await assert.rejects(
+        () => client.createScreenshotRun({ name: "e2e" }),
+        (err: unknown) => err instanceof TranslatizeApiError && err.status === 429 && err.code === "capture_run_limit",
+    );
+});
+
+test("checkScreenshots(): POSTs clientHashes, chunked by 500, and merges `existing`", async () => {
+    const sizes: number[] = [];
+    const calls = installFetchMock((call) => {
+        const me = meRoute(call);
+        if (me) return me;
+        const parsed = JSON.parse(call.body as string) as { clientHashes: string[] };
+        sizes.push(parsed.clientHashes.length);
+        return { json: { existing: parsed.clientHashes.slice(0, 1) } };
+    });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const hashes = Array.from({ length: 501 }, (_, i) => `h${i}`);
+    const out = await client.checkScreenshots("run 1", hashes);
+    assert.deepEqual(sizes, [500, 1]);
+    assert.deepEqual(out.existing, ["h0", "h500"]);
+    assert.equal(calls[1].url, `${BASE}/screenshots/runs/run%201/check`);
+    assert.deepEqual(await client.checkScreenshots("run1", []), { existing: [] });
+    assert.equal(calls.length, 3);
+});
+
+test("uploadScreenshot(): sends multipart meta + image, without a JSON content type", async () => {
+    const calls = installFetchMock((call) => meRoute(call) ?? { status: 201, json: { screenshotId: "s1", deduped: false, links: 3 } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const meta = { name: "checkout", viewport: { width: 1280, height: 720 }, locale: "en", clientHash: "ab".repeat(32), regions: [{ text: "Pay", rect: { x: 1, y: 2, w: 3, h: 4 } }] };
+    const out = await client.uploadScreenshot("run1", { image: new Uint8Array([137, 80, 78, 71]), meta });
+    assert.equal(out.links, 3);
+    const call = calls[1];
+    assert.equal(call.method, "POST");
+    assert.equal(call.url, `${BASE}/screenshots/runs/run1/screens`);
+    assert.equal(call.headers["content-type"], undefined);
+    assert.ok(call.rawBody instanceof FormData);
+    const form = call.rawBody as FormData;
+    assert.deepEqual(JSON.parse(form.get("meta") as string), meta);
+    const image = form.get("image") as Blob;
+    assert.equal(image.type, "image/png");
+    assert.deepEqual([...new Uint8Array(await image.arrayBuffer())], [137, 80, 78, 71]);
+});
+
+test("uploadScreenshot(): meta only when no image is given", async () => {
+    const calls = installFetchMock((call) => meRoute(call) ?? { status: 201, json: { screenshotId: "s1", deduped: true, links: 0 } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    await client.uploadScreenshot("run1", { meta: { name: "home", clientHash: "cd".repeat(32), regions: [] } });
+    const form = calls[1].rawBody as FormData;
+    assert.equal(form.get("image"), null);
+    assert.equal(JSON.parse(form.get("meta") as string).name, "home");
+});
+
+test("uploadScreenshot(): 413 image_too_large and 403 screenshot_quota_exceeded map", async () => {
+    let answer: MockResponseSpec = { status: 413, json: { error: "image_too_large" } };
+    installFetchMock((call) => meRoute(call) ?? answer);
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const input = { image: new Uint8Array([1]), meta: { name: "x", regions: [] } };
+    await assert.rejects(() => client.uploadScreenshot("run1", input), (err: unknown) => err instanceof TranslatizeApiError && err.code === "image_too_large");
+    answer = { status: 403, json: { error: "screenshot_quota_exceeded" } };
+    await assert.rejects(() => client.uploadScreenshot("run1", input), (err: unknown) => err instanceof TranslatizeApiError && err.code === "screenshot_quota_exceeded");
+    answer = { status: 429, json: { error: "run_screen_limit" } };
+    await assert.rejects(() => client.uploadScreenshot("run1", input), (err: unknown) => err instanceof TranslatizeApiError && err.code === "run_screen_limit");
+});
+
+test("completeScreenshotRun(): POSTs .../runs/:id/complete; a blank id throws", async () => {
+    const run = { id: "run1", status: "completed", counts: { screens: 2, linked: 5, ambiguous: 1, superseded: 1 } };
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: { run } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const out = await client.completeScreenshotRun("run1");
+    assert.equal(out.run.counts.linked, 5);
+    assert.equal(calls[1].method, "POST");
+    assert.equal(calls[1].url, `${BASE}/screenshots/runs/run1/complete`);
+    await assert.rejects(() => client.completeScreenshotRun(""), /run id/);
+});
+
+// ============================================================================
+// 0.2.0 – OTA distributions and releases
+// ============================================================================
+
+test("listDistributions(): GETs .../ota/distributions", async () => {
+    const distributions = [{ id: "d1", name: "Web", publicId: "A".repeat(22), branch: "main", publishFilter: "all", format: "json-flat", autoPublishOnMerge: false, status: "active", latestVersion: 3, manifestUrl: "https://cdn.translatize.com/d/x/manifest.json" }];
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: { distributions } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const out = await client.listDistributions();
+    assert.equal(out.distributions[0].latestVersion, 3);
+    assert.equal(calls[1].url, `${BASE}/ota/distributions`);
+});
+
+test("publishRelease(): POSTs {} to .../ota/distributions/:id/releases", async () => {
+    const release = { version: 4, labelCount: 120, languages: { en: { path: "/d/x/v4/en.json", hash: "h", bytes: 10 } }, createdAt: "2026-10-27T00:00:00.000Z" };
+    const calls = installFetchMock((call) => meRoute(call) ?? { status: 201, json: { release, manifestUrl: "https://cdn.translatize.com/d/x/manifest.json" } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    const out = await client.publishRelease("d1");
+    assert.equal(out.release.version, 4);
+    assert.equal(calls[1].method, "POST");
+    assert.equal(calls[1].url, `${BASE}/ota/distributions/d1/releases`);
+    assert.deepEqual(JSON.parse(calls[1].body as string), {});
+    await assert.rejects(() => client.publishRelease(" "), /distribution id/);
+});
+
+test("publishRelease(): branch_not_allowed for a distribution on another branch keeps its details", async () => {
+    installFetchMock((call) => meRoute(call) ?? { status: 400, json: { error: "branch_not_allowed", boundBranch: "main", allowedBranches: ["main"] } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    await assert.rejects(
+        () => client.publishRelease("d2"),
+        (err: unknown) => {
+            assert.ok(err instanceof TranslatizeApiError);
+            assert.equal(err.code, "branch_not_allowed");
+            assert.deepEqual(err.details?.allowedBranches, ["main"]);
+            return true;
+        },
+    );
+});
+
+test("listQaIssues(): lang and includeIgnored go out as query params", async () => {
+    const calls = installFetchMock((call) => meRoute(call) ?? { json: { issues: [], nextCursor: null, counts: { error: 0, warning: 0, info: 0 } } });
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    await client.listQaIssues({ lang: "lv", includeIgnored: true });
+    assert.equal(calls[1].url, `${BASE}/qa/issues?lang=lv&includeIgnored=true`);
+});
+
+test("non-2xx validation bodies become a readable message, the code stays", async () => {
+    let answer: MockResponseSpec = { status: 400, json: { errors: [{ name: '"name" length must be at most 100' }] } };
+    installFetchMock(() => answer);
+    const client = new TranslatizeClient({ apiUrl: "https://api.example.com/v1", token: "t" });
+    await assert.rejects(
+        () => client.me(),
+        (err: unknown) => err instanceof TranslatizeApiError && err.code === "http_400" && /at most 100/.test(err.message),
+    );
+    answer = { status: 400, json: { error: "invalid_request", details: [{ path: "branch", message: '"branch" is not allowed' }] } };
+    await assert.rejects(
+        () => client.me(),
+        (err: unknown) => err instanceof TranslatizeApiError && err.code === "invalid_request" && /"branch" is not allowed/.test(err.message),
+    );
+    answer = { status: 400, json: { error: "invalid_meta", detail: "meta is not valid JSON" } };
+    await assert.rejects(
+        () => client.me(),
+        (err: unknown) => err instanceof TranslatizeApiError && err.code === "invalid_meta" && err.message === "meta is not valid JSON",
+    );
 });

@@ -6,7 +6,10 @@ from CI.
 `translatize` is the command-line client for [Translatize](https://translatize.com).
 It downloads a branch's translations into per-language JSON files (`pull`), sends
 your local source keys back (`push`), and reports drift between the two
-(`status`) so a pull request can be gated on translation completeness. It is
+(`status`) so a pull request can be gated on translation completeness. It also
+gates on translation quality (`qa`), uploads Playwright screenshot captures
+(`screenshots upload`), publishes over-the-air releases (`release`), and writes
+the Translatize rules for coding agents into `AGENTS.md` (`init --agents`). It is
 built on [`@translatize/core`](https://www.npmjs.com/package/@translatize/core)
 and talks to the machine-token integration API.
 
@@ -84,7 +87,11 @@ directory.
 | `format` | yes | On-disk shape: `json-nested` (dotted keys become nested objects) or `json-flat` (dotted keys stay flat). |
 | `files` | yes | Path pattern for each language file. Must contain the `{lang}` placeholder, e.g. `locales/{lang}.json`. |
 | `namespace` | no | Restrict every operation to keys beginning with `"<namespace>."`. |
-| `branch` | no | Default branch for `pull`/`push`/`status`. Must be in the token's allowed set. Overridden by `--branch`. When omitted, commands use the token's bound branch. |
+| `branch` | no | Default branch for `pull`/`push`/`status`/`qa`/`screenshots upload`. Must be in the token's allowed set. Overridden by `--branch`. When omitted, commands use the token's bound branch. |
+| `github` | no | Settings for the Translatize GitHub App (`sourceLanguage`, `autoTranslate`, `commitTranslations`, `requireComplete`, `syncDefaultBranch`). The CLI accepts and ignores it, so one file serves both. |
+
+`qa`, `screenshots upload` and `release` only talk to the API, so they also run
+without a config file (the API URL then comes from `--api-url` or the default).
 
 ### `json-nested` vs `json-flat`
 
@@ -130,6 +137,18 @@ prints the project name, bound branch, role, and configured languages.
 | `--files <pattern>` | File pattern with a `{lang}` placeholder. Default `locales/{lang}.json`. |
 | `--format <format>` | `json-nested` (default) or `json-flat`. |
 | `--force` | Overwrite an existing config file. |
+| `--agents` | Instead of the config, write the coding-agent rules (below). |
+
+#### `translatize init --agents`
+
+Writes the Translatize rules for coding agents into a marked section of
+`AGENTS.md` (created when missing) and of `CLAUDE.md` when that file exists, in the
+config file's directory. The rules: never hardcode user-visible strings; create
+keys through the Translatize MCP server with a description and char limit; use
+dotted key names; work on a branch; run QA before a merge. The section sits
+between `<!-- translatize:agents:start -->` and `<!-- translatize:agents:end -->`.
+Re-running replaces only that section and leaves the rest of the file alone, so
+run it again after upgrading the CLI. It never touches `translatize.config.json`.
 
 ### `translatize pull`
 
@@ -179,10 +198,72 @@ whose values differ (with up to 10 example keys each).
 
 Without a `--fail-*` flag, `status` reports differences but still exits `0`.
 
+### `translatize qa`
+
+Run the Translatize QA checks on the branch – placeholders, ICU syntax and plural
+categories, HTML tags, length against the key's char limit, whitespace,
+untranslated values, glossary, numbers and punctuation – and print the counts per
+severity and the first 20 issues. When the branch is not the token's base branch
+(a `create-own` token working on its own branch), it also reads the branch's
+**merge gate** into the base and prints whether a merge would be blocked.
+
+It exits `1` when there are issues at the `--fail-on` severity or above, **and**
+whenever the merge gate would block the merge – a blocked gate means the merge
+will be refused, whatever `--fail-on` says. Info-level issues never fail it.
+Issues someone ignored in the app are not counted. A branch with more than 20,000
+key × language pairs is checked in the background on the server; `qa` then
+reports the stored issues, which the server keeps current on every change.
+
+| Flag | Description |
+| --- | --- |
+| `--branch <name>` | Branch to check. Overrides the config `branch` field and the token's bound branch. |
+| `--fail-on <severity>` | `error` (default) or `warning` (warnings and errors). |
+| `--json` | Emit the full report as JSON. |
+
+### `translatize screenshots upload [dir]`
+
+Upload the captures `@translatize/playwright` wrote (`<name>.json` +
+`<name>.png` pairs, default dir `.translatize/captures`) as one capture run, so
+Translatize can link each screen to the keys shown on it. It creates the run, asks
+the server which images it already holds, uploads only the missing images (the
+metadata of every screen is still sent), and completes the run. It prints how many
+images went up, how many were already there, and the run's link counts.
+
+A run holds at most **500 screens**; with more captures the command stops before
+creating a run and asks you to split them. A JSON without its PNG is skipped with a
+warning. A screen the server rejects (for example `image_too_large`) is listed and
+the rest still go up; the storage quota or the run limit stop the upload, and what
+was sent is still completed. When the server is busy processing images, a screen is
+retried up to three times after a short wait. Text boxes the server would refuse
+(an empty box, or text over 10,000 characters) and a locale that is not a language
+tag are left out with a warning, so they don't cost the whole screen. Capture runs
+need the Starter plan or higher and a developer-role token.
+
+| Flag | Description |
+| --- | --- |
+| `--branch <name>` | Branch whose keys the screens are matched against. Overrides the config `branch` field. |
+| `--run-name <name>` | Name of the run. Defaults to the CI ref name and the time. |
+| `--commit-sha <sha>` | Commit the screens come from. Defaults to `GITHUB_SHA` or `CI_COMMIT_SHA`. |
+| `--json` | Emit machine-readable JSON. |
+
+### `translatize release`
+
+Publish an over-the-air distribution as a new version on the CDN and print the
+version and the manifest URL. With one distribution in the project it is picked
+automatically; otherwise name it. Needs a developer-role token whose allowed set
+includes the distribution's branch. Anything you publish is public – never put
+secrets in translations.
+
+| Flag | Description |
+| --- | --- |
+| `--distribution <id>` | Distribution id, public id or name. Required when the project has more than one (after `--branch`). |
+| `--branch <name>` | Pick the distribution that publishes this branch. |
+| `--json` | Emit machine-readable JSON. |
+
 ## Selecting a branch
 
-`pull`, `push`, and `status` all accept `--branch <name>`. The branch is resolved
-in this order:
+`pull`, `push`, `status`, `qa` and `screenshots upload` all accept
+`--branch <name>`. The branch is resolved in this order:
 
 1. the `--branch <name>` flag, then
 2. the `branch` field in `translatize.config.json`, then
@@ -218,13 +299,19 @@ jobs:
           TRANSLATIZE_API_TOKEN: ${{ secrets.TRANSLATIZE_API_TOKEN }}
 ```
 
+Add `npx translatize qa` to fail the build on translation QA errors too
+(`--fail-on warning` for a stricter gate).
+
 To push newly added source keys from a merge to `main`, run
 `npx translatize push` in a job with a token bound to that branch. Use `--json`
 if you want to parse the result in a later step.
 
+After your Playwright e2e run, `npx translatize screenshots upload` sends the
+captures; after a merge, `npx translatize release` publishes an OTA release.
+
 ## Machine-readable output
 
-`pull`, `push`, and `status` accept `--json` and print a stable JSON document to
+Every command except `init` accepts `--json` and prints a stable JSON document to
 stdout (human output goes to stdout too; warnings and errors go to stderr). Colors
 are disabled automatically when stdout is not a TTY or when `NO_COLOR` is set, so
 piped and CI logs stay plain.
@@ -234,7 +321,7 @@ piped and CI logs stay plain.
 | Code | Meaning |
 | --- | --- |
 | `0` | Success (including `status` differences when no `--fail-*` gate is set). |
-| `1` | A gate tripped, a `push` had server-side failures, or an API request failed. |
+| `1` | A gate tripped (`status --fail-on-*`, `qa` issues or a blocked merge gate), a `push` or `screenshots upload` had server-side failures, or an API request failed. |
 | `2` | Usage or configuration error (bad flags, missing/invalid config, no token). |
 
 ## License

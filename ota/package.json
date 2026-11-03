@@ -1,0 +1,53 @@
+{
+    "name": "@translatize/ota",
+    "version": "0.2.0",
+    "description": "Zero-dependency over-the-air translation client for browsers, React Native and Node.",
+    "type": "module",
+    "license": "MIT",
+    "author": "SIA \"MICRON\"",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/Translatize/integrations.git",
+        "directory": "ota"
+    },
+    "homepage": "https://translatize.com/docs",
+    "bugs": "https://github.com/Translatize/integrations/issues",
+    "main": "./dist/index.js",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js",
+            "default": "./dist/index.js"
+        },
+        "./i18next": {
+            "types": "./dist/i18next.d.ts",
+            "import": "./dist/i18next.js",
+            "default": "./dist/i18next.js"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "engines": {
+        "node": ">=18.17"
+    },
+    "keywords": [
+        "translatize",
+        "i18n",
+        "ota",
+        "over-the-air",
+        "i18next",
+        "react-native"
+    ],
+    "scripts": {
+        "build": "tsc -p tsconfig.json",
+        "test": "tsc -p tsconfig.test.json && node --no-warnings --test dist-test/test/*.test.js",
+        "clean": "rm -rf dist dist-test"
+    },
+    "devDependencies": {
+        "@types/node": "^20.17.0",
+        "typescript": "^5.7.2"
+    }
+}

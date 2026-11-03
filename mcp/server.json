@@ -1,17 +1,17 @@
 {
     "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
     "name": "com.translatize/mcp",
-    "description": "Read, search, edit and branch Translatize translation labels and fill missing translations.",
+    "description": "Read, edit, branch, translate and QA-check Translatize translation labels from AI agents.",
     "repository": {
         "url": "https://github.com/Translatize/integrations",
         "source": "github"
     },
-    "version": "0.1.3",
+    "version": "0.2.0",
     "packages": [
         {
             "registryType": "npm",
             "identifier": "@translatize/mcp",
-            "version": "0.1.3",
+            "version": "0.2.0",
             "transport": {
                 "type": "stdio"
             },
